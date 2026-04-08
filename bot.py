@@ -3,9 +3,10 @@ from discord.ext import commands
 from discord import app_commands
 import json
 import os
+import asyncio
 from dotenv import load_dotenv
 from typing import Optional
-import asyncio
+import aiofiles
 
 # Load environment variables
 load_dotenv()
@@ -20,7 +21,7 @@ from utils.logger import logger
 with open('config.json', 'r', encoding='utf-8') as f:
     CONFIG = json.load(f)
 
-# Bot setup
+# Bot setup - Disable voice features to avoid audioop issue
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -37,12 +38,11 @@ class TicketBot(commands.Bot):
     async def setup_hook(self):
         await self.db.load_data()
         self.ticket_manager = TicketManager(self, self.db, self.embed_builder, self.config)
-        await self.load_extension('commands')
         await self.tree.sync()
         logger.info("Bot setup complete")
     
     async def on_ready(self):
-        logger.info(f'Bot logged in as {self.user.name}')
+        logger.info(f'Bot logged in as {self.user.name} (ID: {self.user.id})')
         
         # Set bot status
         status_config = self.config['bot_status']
@@ -63,6 +63,8 @@ class TicketBot(commands.Bot):
         
         # Restore ticket panel
         await self.restore_ticket_panel()
+        
+        logger.info("Bot is ready!")
     
     async def restore_ticket_panel(self):
         """Restore ticket panel after restart"""
@@ -74,8 +76,10 @@ class TicketBot(commands.Bot):
                     message = await channel.fetch_message(message_id)
                     if message:
                         logger.info("Ticket panel restored successfully")
-                except:
-                    logger.warning("Could not restore ticket panel message")
+                except discord.NotFound:
+                    logger.warning("Ticket panel message not found")
+                except Exception as e:
+                    logger.warning(f"Could not restore ticket panel message: {e}")
     
     async def on_member_remove(self, member: discord.Member):
         """Handle member leaving"""
@@ -83,19 +87,23 @@ class TicketBot(commands.Bot):
 
 bot = TicketBot()
 
+# Custom check for admin permissions
+def is_admin():
+    async def predicate(interaction: discord.Interaction):
+        if interaction.user.id == bot.config['owner_id']:
+            return True
+        if interaction.user.guild_permissions.administrator:
+            return True
+        user_roles = [role.id for role in interaction.user.roles]
+        return any(role_id in user_roles for role_id in bot.config['admin_roles'])
+    return app_commands.check(predicate)
+
 # Commands
 @bot.tree.command(name="ticketpanel", description="Load ticket panel in current channel")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def ticketpanel(interaction: discord.Interaction):
     """Load ticket panel (Admin only)"""
     try:
-        # Check permissions
-        if not interaction.user.guild_permissions.administrator and interaction.user.id != bot.config['owner_id']:
-            has_admin_role = any(role.id in bot.config['admin_roles'] for role in interaction.user.roles)
-            if not has_admin_role:
-                await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-                return
-        
         # Create dropdown
         select = TicketDropdown(bot)
         view = discord.ui.View(timeout=None)
@@ -110,10 +118,11 @@ async def ticketpanel(interaction: discord.Interaction):
         await bot.db.update_panel_info(interaction.channel_id, message.id)
         
         logger.info(f"Ticket panel loaded by {interaction.user} in {interaction.channel}")
+        await interaction.followup.send("✅ Ticket panel loaded successfully!", ephemeral=True)
         
     except Exception as e:
         logger.error(f"Error loading ticket panel: {e}")
-        await interaction.response.send_message("An error occurred while loading the ticket panel!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 class TicketDropdown(discord.ui.Select):
     def __init__(self, bot: TicketBot):
@@ -127,8 +136,8 @@ class TicketDropdown(discord.ui.Select):
             if key not in temp_removed:
                 options.append(
                     discord.SelectOption(
-                        label=value['label'],
-                        description=value['description'],
+                        label=value['label'][:100],  # Limit length
+                        description=value.get('description', '')[:100] if value.get('description') else None,
                         emoji=value.get('emoji'),
                         value=key
                     )
@@ -148,10 +157,10 @@ class TicketDropdown(discord.ui.Select):
         if option_data:
             await self.bot.ticket_manager.create_ticket(interaction, selected, option_data)
         else:
-            await interaction.response.send_message("Invalid ticket option!", ephemeral=True)
+            await interaction.response.send_message("❌ Invalid ticket option!", ephemeral=True)
 
 @bot.tree.command(name="addnewoption", description="Add a new ticket option")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def addnewoption(
     interaction: discord.Interaction,
     name: str,
@@ -163,57 +172,64 @@ async def addnewoption(
 ):
     """Add new ticket option"""
     try:
-        if interaction.user.id != bot.config['owner_id'] and not any(role.id in bot.config['admin_roles'] for role in interaction.user.roles):
-            await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
+        # Validate category ID
+        try:
+            category_id_int = int(category_id)
+        except ValueError:
+            await interaction.response.send_message("❌ Category ID must be a number!", ephemeral=True)
             return
         
+        support_role_int = None
+        if support_role_id:
+            try:
+                support_role_int = int(support_role_id)
+            except ValueError:
+                await interaction.response.send_message("❌ Support role ID must be a number!", ephemeral=True)
+                return
+        
         bot.config['ticket_categories'][name] = {
-            "category_id": int(category_id),
+            "category_id": category_id_int,
             "label": label,
             "description": description,
-            "emoji": emoji,
-            "support_role_id": int(support_role_id) if support_role_id else None
+            "emoji": emoji if emoji else None,
+            "support_role_id": support_role_int
         }
         
         # Save to config
         with open('config.json', 'w', encoding='utf-8') as f:
             json.dump(bot.config, f, indent=4, ensure_ascii=False)
         
-        await interaction.response.send_message(f"Ticket option '{label}' added successfully!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Ticket option '{label}' added successfully!", ephemeral=True)
         logger.info(f"New ticket option added: {name}")
         
     except Exception as e:
         logger.error(f"Error adding option: {e}")
-        await interaction.response.send_message("An error occurred while adding the option!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="removeoption", description="Temporarily remove a ticket option")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def removeoption(interaction: discord.Interaction):
     """Temporarily remove a ticket option"""
     try:
-        if interaction.user.id != bot.config['owner_id'] and not any(role.id in bot.config['admin_roles'] for role in interaction.user.roles):
-            await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-            return
-        
         # Create dropdown for options to remove
         options = []
         for key, value in bot.config['ticket_categories'].items():
             if key not in [opt.get('name') for opt in bot.db.data.get('temp_removed_options', [])]:
-                options.append(discord.SelectOption(label=value['label'], value=key))
+                options.append(discord.SelectOption(label=value['label'][:100], value=key))
         
         if not options:
-            await interaction.response.send_message("No options available to remove!", ephemeral=True)
+            await interaction.response.send_message("❌ No options available to remove!", ephemeral=True)
             return
         
         select = RemoveOptionSelect(bot, options)
         view = discord.ui.View(timeout=60)
         view.add_item(select)
         
-        await interaction.response.send_message("Select the option to temporarily remove:", view=view, ephemeral=True)
+        await interaction.response.send_message("📋 Select the option to temporarily remove:", view=view, ephemeral=True)
         
     except Exception as e:
         logger.error(f"Error in removeoption: {e}")
-        await interaction.response.send_message("An error occurred!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 class RemoveOptionSelect(discord.ui.Select):
     def __init__(self, bot: TicketBot, options):
@@ -229,33 +245,29 @@ class RemoveOptionSelect(discord.ui.Select):
             'data': option_data
         })
         
-        await interaction.response.send_message(f"Option '{option_data['label']}' temporarily removed!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Option '{option_data['label']}' temporarily removed!", ephemeral=True)
         logger.info(f"Option temporarily removed: {option_name}")
 
 @bot.tree.command(name="add_temp_option", description="Add back a temporarily removed option")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def add_temp_option(interaction: discord.Interaction):
     """Add back temporarily removed option"""
     try:
-        if interaction.user.id != bot.config['owner_id'] and not any(role.id in bot.config['admin_roles'] for role in interaction.user.roles):
-            await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-            return
-        
         temp_options = await bot.db.get_temp_removed_options()
         if not temp_options:
-            await interaction.response.send_message("No temporarily removed options found!", ephemeral=True)
+            await interaction.response.send_message("❌ No temporarily removed options found!", ephemeral=True)
             return
         
-        options = [discord.SelectOption(label=opt['data']['label'], value=opt['name']) for opt in temp_options]
+        options = [discord.SelectOption(label=opt['data']['label'][:100], value=opt['name']) for opt in temp_options]
         select = AddTempOptionSelect(bot, options)
         view = discord.ui.View(timeout=60)
         view.add_item(select)
         
-        await interaction.response.send_message("Select the option to add back:", view=view, ephemeral=True)
+        await interaction.response.send_message("📋 Select the option to add back:", view=view, ephemeral=True)
         
     except Exception as e:
         logger.error(f"Error in add_temp_option: {e}")
-        await interaction.response.send_message("An error occurred!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 class AddTempOptionSelect(discord.ui.Select):
     def __init__(self, bot: TicketBot, options):
@@ -266,27 +278,27 @@ class AddTempOptionSelect(discord.ui.Select):
         option_name = self.values[0]
         await self.bot.db.remove_temp_removed_option(option_name)
         
-        await interaction.response.send_message(f"Option added back successfully!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Option added back successfully!", ephemeral=True)
         logger.info(f"Option added back: {option_name}")
 
 @bot.tree.command(name="help", description="Show all commands")
 async def help_command(interaction: discord.Interaction):
     """Show help menu"""
     embed = discord.Embed(
-        title="Ticket Bot Commands",
+        title="🎫 Ticket Bot Commands",
         description="Here are all available commands:",
         color=bot.config['embed_settings']['color']
     )
     
     commands_list = [
-        ("/ticketpanel", "Load ticket panel in current channel"),
-        ("/addnewoption", "Add a new ticket option"),
-        ("/removeoption", "Temporarily remove a ticket option"),
-        ("/add_temp_option", "Add back a temporarily removed option"),
-        ("/bot_stats", "Show bot statistics"),
-        ("/addblacklist", "Blacklist a user from creating tickets"),
-        ("/removeblacklist", "Remove user from blacklist"),
-        ("/help", "Show this help menu")
+        ("`/ticketpanel`", "Load ticket panel in current channel"),
+        ("`/addnewoption`", "Add a new ticket option"),
+        ("`/removeoption`", "Temporarily remove a ticket option"),
+        ("`/add_temp_option`", "Add back a temporarily removed option"),
+        ("`/bot_stats`", "Show bot statistics"),
+        ("`/addblacklist`", "Blacklist a user from creating tickets"),
+        ("`/removeblacklist`", "Remove user from blacklist"),
+        ("`/help`", "Show this help menu")
     ]
     
     for cmd, desc in commands_list:
@@ -300,75 +312,71 @@ async def bot_stats(interaction: discord.Interaction):
     """Show bot statistics"""
     try:
         tickets = await bot.db.get_all_tickets()
-        open_tickets = len([t for t in tickets.values() if t['status'] == 'open'])
-        closed_tickets = len([t for t in tickets.values() if t['status'] == 'closed'])
+        open_tickets = len([t for t in tickets.values() if t.get('status') == 'open'])
+        closed_tickets = len([t for t in tickets.values() if t.get('status') == 'closed'])
         
         embed = discord.Embed(
-            title="Bot Statistics",
+            title="📊 Bot Statistics",
             color=bot.config['embed_settings']['color'],
             timestamp=discord.utils.utcnow()
         )
         
-        embed.add_field(name="📊 Total Tickets", value=len(tickets), inline=True)
-        embed.add_field(name="🟢 Open Tickets", value=open_tickets, inline=True)
-        embed.add_field(name="🔴 Closed Tickets", value=closed_tickets, inline=True)
-        embed.add_field(name="📁 Available Options", value=len(bot.config['ticket_categories']), inline=True)
-        embed.add_field(name="🚫 Blacklisted Users", value=len(bot.db.data.get('blacklisted_users', [])), inline=True)
+        embed.add_field(name="📊 Total Tickets", value=str(len(tickets)), inline=True)
+        embed.add_field(name="🟢 Open Tickets", value=str(open_tickets), inline=True)
+        embed.add_field(name="🔴 Closed Tickets", value=str(closed_tickets), inline=True)
+        embed.add_field(name="📁 Available Options", value=str(len(bot.config['ticket_categories'])), inline=True)
+        embed.add_field(name="🚫 Blacklisted Users", value=str(len(bot.db.data.get('blacklisted_users', []))), inline=True)
         embed.add_field(name="🏓 Bot Ping", value=f"{round(bot.latency * 1000)}ms", inline=True)
         embed.add_field(name="👑 Owner", value=f"<@{bot.config['owner_id']}>", inline=True)
-        embed.add_field(name="📈 Ticket Counter", value=bot.db.data.get('ticket_counter', 0), inline=True)
+        embed.add_field(name="📈 Ticket Counter", value=str(bot.db.data.get('ticket_counter', 0)), inline=True)
         
         embed.set_footer(text=bot.config['embed_settings']['footer_text'])
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
     except Exception as e:
         logger.error(f"Error in bot_stats: {e}")
-        await interaction.response.send_message("An error occurred!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="addblacklist", description="Blacklist a user from creating tickets")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def addblacklist(interaction: discord.Interaction, user: discord.User):
     """Blacklist a user"""
     try:
-        if interaction.user.id != bot.config['owner_id'] and not any(role.id in bot.config['admin_roles'] for role in interaction.user.roles):
-            await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-            return
-        
         await bot.db.add_blacklisted_user(user.id)
-        await interaction.response.send_message(f"{user.mention} has been blacklisted from creating tickets!", ephemeral=True)
+        await interaction.response.send_message(f"✅ {user.mention} has been blacklisted from creating tickets!", ephemeral=True)
         logger.info(f"User {user} blacklisted by {interaction.user}")
         
     except Exception as e:
         logger.error(f"Error in addblacklist: {e}")
-        await interaction.response.send_message("An error occurred!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="removeblacklist", description="Remove user from blacklist")
-@app_commands.default_permissions(administrator=True)
+@is_admin()
 async def removeblacklist(interaction: discord.Interaction, user: discord.User):
     """Remove user from blacklist"""
     try:
-        if interaction.user.id != bot.config['owner_id'] and not any(role.id in bot.config['admin_roles'] for role in interaction.user.roles):
-            await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-            return
-        
         await bot.db.remove_blacklisted_user(user.id)
-        await interaction.response.send_message(f"{user.mention} has been removed from blacklist!", ephemeral=True)
+        await interaction.response.send_message(f"✅ {user.mention} has been removed from blacklist!", ephemeral=True)
         logger.info(f"User {user} removed from blacklist by {interaction.user}")
         
     except Exception as e:
         logger.error(f"Error in removeblacklist: {e}")
-        await interaction.response.send_message("An error occurred!", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 # Error handling
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f"Command error: {error}")
-    await ctx.send(f"An error occurred: {str(error)}")
+    await ctx.send(f"❌ An error occurred: {str(error)}")
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     logger.error(f"Slash command error: {error}")
-    await interaction.response.send_message(f"An error occurred: {str(error)}", ephemeral=True)
+    
+    if isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ An error occurred: {str(error)}", ephemeral=True)
 
 # Run bot
 if __name__ == "__main__":
