@@ -1,0 +1,50 @@
+{
+    "OWNER_ID": 1262027340129505290,
+    "ADMIN_ROLE_ID": 1431752582656688169,
+    "SUPPORT_ROLE_ID": 1431752582313021640,
+    "LOG_CHANNEL_ID": 1431752584154189833,
+    "BOT_STATUS": "dnd",
+    "BOT_ACTIVITY": "TICKET SYSTEM",
+    "PANEL_TITLE": "WARRIOR TICKETS",
+    "PANEL_DESCRIPTION": "**Welcome to our Ticket!**\n\nSelect a ticket type from the dropdown menu below to get started. Our team will assist you as soon as possible.\n\n**Available Options:**\n<:1523reddot:1484908633505529987> **Buy** - Purchase our Warrior Products\n<:1523reddot:1484908633505529987> **Support** - Get Help With Any Issue\n<:1523reddot:1484908633505529987> **Reseller** - Reseller applications\n<:1523reddot:1484908633505529987> **Join Team** - Team applications\n<:1523reddot:1484908633505529987> **And More** - Check DropDown Ticket Menu",
+    "PANEL_FOOTER": "PROGRAMED BY SUBHAN",
+    "PANEL_IMAGE": "https://example.com/image.png",
+    "PANEL_THUMBNAIL": "https://example.com/thumb.png",
+    "PANEL_FOOTER_IMAGE": "https://example.com/footer.png",
+    "TICKET_IMAGE": "https://example.com/ticket.png",
+    "TICKET_THUMBNAIL": "https://example.com/ticket_thumb.png",
+    "EMBED_COLOR_R": 0,
+    "EMBED_COLOR_G": 100,
+    "EMBED_COLOR_B": 255,
+    "TICKET_OPTIONS": [
+        {
+            "name": "Buy Now",
+            "description": "Warrior Private Products",
+            "category_id": 1431752583801995389,
+            "emoji": "🛒",
+            "support": []
+        },
+        {
+            "name": "Support",
+            "description": "Get Help With Any About Warrior Products",
+            "category_id": 1431752583957188694,
+            "emoji": "☎️",
+            "support": [1431752582313021640]
+        },
+        {
+            "name": "Reseller",
+            "description": "Become A Offical Warrior Reseller",
+            "category_id": 1431752583957188696,
+            "emoji": "💼",
+            "support": []
+        },
+        {
+            "name": "Join Team",
+            "description": "Join Our Warrior STREAMER/CREATOR Team",
+            "category_id": 1431752583957188699,
+            "emoji": "👥",
+            "support": [1431752582313021640]
+        }
+    ]
+}
+}
