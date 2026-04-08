@@ -54,6 +54,7 @@ python bot.py
 ```
 
 Features Implemented:
+```
 
 ✅ Error Handling System - Comprehensive error handling with logging
 ✅ Persistence - Tickets survive bot restarts (memory.json)
@@ -73,7 +74,7 @@ Features Implemented:
 ✅ Bot Stats - Complete statistics command
 ✅ Help Command - Shows all available commands
 ✅ Railway Compatible - Ready for deployment on Railway
-
+```
 Deployment on Railway:
 
 1. Push code to GitHub repository
